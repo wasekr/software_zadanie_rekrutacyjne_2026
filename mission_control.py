@@ -140,8 +140,13 @@ class MissionControl:
         o_main = self._build_servo_frame('oxidizer_main', True)
         igniter = self._build_relay_frame('igniter', True)
 
+        #should work with 3 push and one send but didn't (probably because of simple network protocole)
         self.cm.push(f_main)
+        self.cm.send()
+
         self.cm.push(o_main)
+        self.cm.send()
+
         self.cm.push(igniter)
         self.cm.send()
 
@@ -248,6 +253,18 @@ class MissionControl:
         try:
             while True:
                 self.autopilot()
+
+                # one row of latest telemetric data
+                alt = self.rocket_state.telemetry.get('altitude', 0.0)
+                vel = self.rocket_state.velocity
+                ox = self.rocket_state.telemetry.get('oxidizer_level', 0.0)
+                fuel = self.rocket_state.telemetry.get('fuel_level', 0.0)
+                press = self.rocket_state.telemetry.get('oxidizer_pressure', 0.0)
+
+                #\r moves cursor at the begining of line
+                print(
+                    f"State: {self.state.name:15} | Alt: {alt:6.1f}m | Vel: {vel:6.1f}m/s | Ox: {ox:5.1f}% | Fuel: {fuel:5.1f}% | Press: {press:5.1f} bar",
+                    end='\r')
 
                 # guaranteed frequency and background thread (Telemetric receiver) can use cpu in this time
                 time.sleep(0.1)
