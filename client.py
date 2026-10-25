@@ -17,10 +17,10 @@ class TelemetricReceiver(threading.Thread):
     If this sits in main loop, state machine stops dead waiting for data. By isolating it in a background thread, the network
     listener quietly waits for packets and updates RocketState in the background. This allows main FSM loop to evaluate physics and trigger the
     parachute at a guaranteed high frequency without network-induced latency.
-    splited logic (sensors packets handled by making specific frames and registering callbacks and nack or ack handled in if in except error among other undefined packets)
+    split logic (sensors packets handled by making specific frames and registering callbacks and nack or ack handled in if in except error among other undefined packets)
     was worse for multithreaded system,
-    now as we deal with all packets in one place (in except error section)  we have guranteed exact order of operations, we dont have to make artificial frames (for sensors)
-    we avoid borderplate
+    now as we deal with all packets in one place (in except error section)  we have guaranteed exact order of operations, we dont have to make artificial frames (for sensors)
+    we avoid boilerplate
     """
 
     def __init__(self, cm: CommunicationManager, state: RocketState, config: dict):

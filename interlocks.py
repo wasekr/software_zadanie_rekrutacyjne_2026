@@ -28,9 +28,14 @@ class SafetyInterlocks:
         return (True, "OK")
 
     def can_ignite(self):
+        if self.state.telemetry['oxidizer_level'] < 99.5 or self.state.telemetry['fuel_level'] < 99.5:
+            return (False, "Error: Tanks are not fully loaded for ignition")
+
         ox_pressure = self.state.telemetry['oxidizer_pressure']
+
         if ox_pressure < 40.0:
             return (False, f"Error: Oxidizer pressure is too low: {ox_pressure:.1f}")
         if ox_pressure > 64.5:
             return (False, f"Error: Oxidizer pressure is too high for engine to work: {ox_pressure:.1f}")
+
         return (True, "OK")

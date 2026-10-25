@@ -12,6 +12,10 @@ with ui.card().classes('w-full items-center p-4 bg-slate-50 min-h-screen'):
     # elements dynamically updated
     state_label = ui.label(f"State: {mc.state.name}").classes('text-xl font-mono bg-blue-100 px-4 py-2 rounded-lg mb-6 shadow-sm')
 
+    # ACK and NACK counter
+    ack_label = ui.label("Confirmed Commands (ACK): 0 | Rejected (NACK): 0").classes(
+        'text-sm font-mono text-gray-600 mb-4')
+
     # Initialize data trackers at the top of file
     chart_data = {'time': [], 'alt': []}
     tick = [0]  # List used to easily modify the counter inside update_ui
@@ -107,6 +111,9 @@ def update_gui():
     else:
         state_label.set_text(f"State: {mc.state.name}")
 
+    ack_label.set_text(
+        f"Confirmed Commands (ACK): {mc.rocket_state.ack_count} | Rejected (NACK): {mc.rocket_state.nack_count}")
+
     #updating  UI elements with fresh data
     alt_label.set_text(f'Altitude: {alt:.1f} m')
     vel_label.set_text(f'Velocity: {vel:.1f} m/s')
@@ -140,10 +147,10 @@ def update_gui():
             t_time_label.set_text(f"T+ {elapsed:05.1f}s")
 
     # Hardware Status Mapping (Green = OPEN/ON, Red = CLOSED/OFF)
-    heater_badge.props(f'color={"green" if mc.state.name in ["PRESSURIZING", "READY"] else "red"}')
+    heater_badge.props(f'color={"green" if mc.state.name == "PRESSURIZING" else "red"}')
     ox_main_badge.props(f'color={"green" if mc.state.name == "IN_FLIGHT" else "red"}')
     fuel_main_badge.props(f'color={"green" if mc.state.name == "IN_FLIGHT" else "red"}')
-    igniter_badge.props(f'color={"green" if mc.state.name == "READY" else "red"}')
+    igniter_badge.props(f'color={"green" if mc.state.name == "IN_FLIGHT" else "red"}')
     chute_badge.props(f'color={"green" if mc.state.name == "RECOVERY" else "red"}')
 
 

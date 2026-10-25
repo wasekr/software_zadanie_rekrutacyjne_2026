@@ -27,6 +27,8 @@ class RocketState:
         # for keeping ACE / NACK responses
         # format {device_id: True/False}
         self.command_responses = {}
+        self.ack_count = 0
+        self.nack_count = 0
 
 
     def update_sensor(self, sensor_name: str, value: float):
@@ -62,3 +64,7 @@ class RocketState:
         Register if a command were finished as a success (ACE) or failure (NACK)
         """
         self.command_responses[device_id] = success
+        if success:
+            self.ack_count += 1
+        else:
+            self.nack_count += 1

@@ -131,7 +131,7 @@ class MissionControl:
         """
         safe, msg = self.interlocks.can_ignite()
         if not safe:
-            self.trigger_abort(f"IGNITION BLOCKED BY INTERBLOCKS: {msg}")
+            self.trigger_abort(f"IGNITION BLOCKED BY INTERLOCKS: {msg}")
             return
 
         print("\n\n>>> INITIATING RAPID IGNITION SEQUENCE...")
@@ -194,7 +194,7 @@ class MissionControl:
             if ox_pressure >= 85.0:
                 self.trigger_abort("CRITICAL OVERPRESSURE DETECTED")
                 return
-            # sudden fueal leakage right before the start
+            # sudden fuel leakage right before the start
             if fuel_level < 97.0:
                 self.trigger_abort("FUEL LEAKAGE DETECTED")
                 return
