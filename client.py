@@ -3,7 +3,7 @@ from communication_library import ids
 from communication_library.communication_manager import CommunicationManager
 from communication_library.exceptions import TransportTimeoutError, \
     UnregisteredCallbackError
-from software_zadanie_rekrutacyjne_2026.state import RocketState
+from state import RocketState
 
 
 class TelemetricReceiver(threading.Thread):
@@ -32,7 +32,7 @@ class TelemetricReceiver(threading.Thread):
 
     def _get_sensor_name(self, device_id: int):
         """
-        Helper tp get sensor name from device_id from YAML file
+        Helper to get sensor name from device_id (data form sensor received via feed package) from YAML file
         :param device_id:
         :return: sensor name | None
         """

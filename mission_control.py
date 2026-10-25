@@ -4,9 +4,12 @@ from communication_library.tcp_transport import TcpSettings
 from communication_library.transport import TransportType
 from communication_library.frame import Frame
 from communication_library import ids
-from communication_library.exceptions import TransportTimeoutError, \
-    UnregisteredCallbackError
 from enum import Enum, auto
+from client import TelemetricReceiver
+from interlocks import SafetyInterlocks
+from state import RocketState
+import time
+
 
 class MissionState(Enum):
     INIT = auto() # = 1 because automatically assign ascending values
@@ -24,75 +27,34 @@ class MissionControl:
         with open(config_path, "r") as f:
             self.config = yaml.safe_load(f)
 
-        # stores current sensor readings for FSM logic
-        self.telemetry = {}
-
         # initialization of Finite State Machine
         self.state = MissionState.INIT
-
-        self.max_altitude = 0.0
 
         self.cm = CommunicationManager()
         self.cm.change_transport_type(TransportType.TCP)
         self.cm.connect(TcpSettings("127.0.0.1", 3000))
 
-        self.setup_telemetry_listeners()
+        self.rocket_state = RocketState()
+        self.interlocks = SafetyInterlocks(self.rocket_state)
 
-    def on_sensor_feed(self, frame: Frame):
-        """Callback executed automatically after receiving right sensor telemetry"""
-        sensor_id = frame.device_id
+        self.receiver = TelemetricReceiver(self.cm, self.rocket_state, self.config)
 
-        for sensor_name, sensor_data in self.config['devices']['sensor'].items():
-            if sensor_data['device_id'] == sensor_id:
-                self.telemetry[sensor_name] = frame.payload[0]
-                print(f"[{sensor_name.upper()}]: {self.telemetry[sensor_name]}")
-                break
+        #opening a thread (and runs "run" method)
+        self.receiver.start()
 
+        # short pause so the background thread can receive first feed frames from network before FSM start
+        time.sleep(1.5)
 
-    def setup_telemetry_listeners(self):
-        """
-        Registers listener callbacks to filter and catch specific sensor frames from sensors (other "noise" are filtered)
-        (unnecessary packages received from the network are ignored,
-         ACK confirmations are being let through in exception section
-         and sensor measurements packages are recognised and make it immediately to telemetry dictionary (updating it)
-        """
-        for sensor_name, sensor_data in self.config['devices']['sensor'].items():
-            data_type = sensor_data['data_type'].upper()
-            enum_data_type = ids.DataTypeID[data_type]
-
-            pattern_frame = Frame(
-                destination = ids.BoardID.SOFTWARE,
-                priority= ids.PriorityID.LOW,
-                action = ids.ActionID.FEED,
-                source = ids.BoardID.ROCKET,
-                device_type = ids.DeviceID.SENSOR,
-                device_id = sensor_data['device_id'],
-                data_type = enum_data_type,
-                operation=ids.OperationID.SENSOR.value.READ,
-                payload=()
-            )
-
-            self.cm.register_callback(self.on_sensor_feed, pattern_frame)
-            self.telemetry[sensor_name] = 0.0
-
-    def set_servo_position(self, servo_name: str, open_value: bool):
-        """
-        Sends a high-priority service command to change a servo's position.
-
-        :param servo_name: Name of the servo in the YAML config.
-        :param open_value: True to open the valve, False to close it.
-        """
-
+    def _build_servo_frame(self, servo_name: str, open_value: bool):
+        """helper for building frames without sending them"""
         servo_data = self.config['devices']['servo'][servo_name]
 
         # 0 may be interpreted as angle where fuel pipe is fully open and 100 as angle where it's totally closed
         # rather than 0% or 100% of flow
         target_position = servo_data['open_pos'] if open_value else servo_data['closed_pos']
-
-        # now we use service because it's a command for rocket
-        command_frame = Frame(
+        return Frame(
             destination = ids.BoardID.ROCKET,
-            priority= ids.PriorityID.HIGH,
+            priority = ids.PriorityID.HIGH,
             action = ids.ActionID.SERVICE,
             source = ids.BoardID.SOFTWARE,
             device_type = ids.DeviceID.SERVO,
@@ -102,13 +64,46 @@ class MissionControl:
             payload = (target_position,)
         )
 
+    def _build_relay_frame(self, relay_name: str, open_relay: bool):
+        """helper for building frames without sending them"""
+        relay_data = self.config['devices']['relay'][relay_name]
+        operation = ids.OperationID.RELAY.value.OPEN if open_relay else ids.OperationID.RELAY.value.CLOSE
+
+        # now we use service because it's a command for rocket
+        return Frame(
+            destination=ids.BoardID.ROCKET,
+            priority=ids.PriorityID.HIGH,
+            action=ids.ActionID.SERVICE,
+            source=ids.BoardID.SOFTWARE,
+            device_type=ids.DeviceID.RELAY,
+            device_id=relay_data['device_id'],
+            data_type=ids.DataTypeID.NO_DATA,
+            operation=operation,
+            payload=()
+        )
+
+    def set_servo_position(self, servo_name: str, open_value: bool):
+        """
+        Sends a high-priority service command to change a servo's position.
+
+        :param servo_name: Name of the servo in the YAML config.
+        :param open_value: True to open the valve, False to close it.
+        """
+        if open_value and servo_name == 'fuel_intake':
+            safe, msg = self.interlocks.can_open_fuel_intake()
+            if not safe:
+                print(msg)
+                return
+
+        command_frame = self._build_servo_frame(servo_name, open_value)
+
         # enque
         self.cm.push(command_frame)
 
         # deque
         self.cm.send()
 
-        print(f">>> Sent a command setting position {servo_name} -> {target_position}")
+        print(f">>> Sent a command: {servo_name} -> {'OPEN' if open_value else 'CLOSE'}")
 
     def set_relay_state(self, relay_name: str, open_relay: bool):
         """
@@ -117,24 +112,42 @@ class MissionControl:
         :param relay_name: Name of the relay in the YAML config.
         :param open_relay: True to open the relay, False to close it.
         """
-        relay_data = self.config['devices']['relay'][relay_name]
-        operation = ids.OperationID.RELAY.value.OPEN if open_relay else ids.OperationID.RELAY.value.CLOSE
 
-        command_frame = Frame(
-            destination = ids.BoardID.ROCKET,
-            priority= ids.PriorityID.HIGH,
-            action = ids.ActionID.SERVICE,
-            source = ids.BoardID.SOFTWARE,
-            device_type = ids.DeviceID.RELAY,
-            device_id = relay_data['device_id'],
-            data_type = ids.DataTypeID.NO_DATA,
-            operation = operation,
-            payload = ()
-        )
+        if open_relay and relay_name == 'parachute':
+            safe, msg = self.interlocks.can_deploy_parachute()
+            if not safe:
+                print(msg)
+                return
 
+        command_frame = self._build_relay_frame(relay_name, open_relay)
         self.cm.push(command_frame)
         self.cm.send()
         print(f">>> Command: Relay {relay_name} -> {'OPEN' if open_relay else 'CLOSE'}")
+
+
+    def trigger_ignition_sequence(self):
+        """
+        Sending 3 commands at once so to perform operations under 1 second window
+        """
+        safe, msg = self.interlocks.can_ignite()
+        if not safe:
+            self.trigger_abort(f"IGNITION BLOCKED BY INTERBLOCKS: {msg}")
+            return
+
+        print("\n\n>>> INITIATING RAPID IGNITION SEQUENCE...")
+
+        f_main = self._build_servo_frame('fuel_main', True)
+        o_main = self._build_servo_frame('oxidizer_main', True)
+        igniter = self._build_relay_frame('igniter', True)
+
+        self.cm.push(f_main)
+        self.cm.push(o_main)
+        self.cm.push(igniter)
+        self.cm.send()
+
+        self.state = MissionState.IN_FLIGHT
+        print(f"\n\n>>> Change of state: {self.state}\nLIFT-OFF !!!\n")
+
 
     def trigger_abort(self, reason: str):
         """
@@ -144,14 +157,14 @@ class MissionControl:
         self.state = MissionState.ABORT
         print(f"\n\n>>>MISSION ABORTED ! ! !\nREASON: {reason}\n\n")
 
-        self.set_relay_state('oxidizer_heater', open_relay=False)
-        self.set_relay_state('igniter', open_relay=False)
-
-        self.set_servo_position('oxidizer_intake', open_value=False)
-        self.set_servo_position('fuel_intake', open_value=False)
-        self.set_servo_position('oxidizer_main', open_value=False)
-        self.set_servo_position('fuel_main', open_value=False)
-
+        # direct sending avoiding standard logic (set_relay or servo functions as we dont have to check interlocks cases for these)
+        self.cm.push(self._build_relay_frame('oxidizer_heater', False))
+        self.cm.push(self._build_relay_frame('igniter', False))
+        self.cm.push(self._build_servo_frame('oxidizer_intake', False))
+        self.cm.push(self._build_servo_frame('fuel_intake', False))
+        self.cm.push(self._build_servo_frame('oxidizer_main', False))
+        self.cm.push(self._build_servo_frame('fuel_main', False))
+        self.cm.send()
         print("ALL SYSTEMS SECURED\n\n")
 
     def autopilot(self):
@@ -159,23 +172,18 @@ class MissionControl:
         Analyzes telemetric data and drives the state machine to fill the oxidizer and fuel properly
         """
 
-        # check if we already have any telemetric data (from sensors)
-        if not self.telemetry:
-            return
+        # downloading telemetry directly from physical object
+        ox_level = self.rocket_state.telemetry.get('oxidizer_level', 0.0)
+        fuel_level = self.rocket_state.telemetry.get('fuel_level', 0.0)
+        ox_pressure = self.rocket_state.telemetry.get('oxidizer_pressure', 0.0)
 
-        ox_level = self.telemetry.get('oxidizer_level', 0.0)
-        fuel_level = self.telemetry.get('fuel_level', 0.0)
-        ox_pressure = self.telemetry.get('oxidizer_pressure', 0.0)
-        altitude = self.telemetry.get('altitude', 0.0)
-
-        # global safety check: aborting mission (before launch) if critical overpressure (risk of explosion)
+        # global safety check: aborting mission (before launch) if critical conditions
         if self.state in (MissionState.PRESSURIZING, MissionState.READY):
-            if ox_pressure >= 68.0:
+            # oxidizer tank pressure cannot exceed 90
+            if ox_pressure >= 85.0:
                 self.trigger_abort("CRITICAL OVERPRESSURE DETECTED")
                 return
-
-        # global safety check: aborting mission after detecting sudden fuel leakage right before start
-        if self.state in (MissionState.PRESSURIZING, MissionState.READY):
+            # sudden fueal leakage right before the start
             if fuel_level < 97.0:
                 self.trigger_abort("FUEL LEAKAGE DETECTED")
                 return
@@ -217,19 +225,10 @@ class MissionControl:
                 print(f"\n\n>>> Change of state: {self.state} (for launch)\n\n")
 
         elif self.state == MissionState.READY:
-            self.set_servo_position('oxidizer_main', open_value=True)
-            self.set_servo_position('fuel_main', open_value=True)
-            self.set_relay_state('igniter', open_relay=True)
-            self.state = MissionState.IN_FLIGHT
-            print(f"\n\n>>> Change of state: {self.state}\nLIFT-OFF !!!\n")
+            self.trigger_ignition_sequence()
 
         elif self.state == MissionState.IN_FLIGHT:
-            if altitude >= self.max_altitude:
-                self.max_altitude = altitude
-
-            # if the rocket will start falling
-            # -0.5m is epsilon of error to avoid premature parachute opening
-            if altitude < self.max_altitude - 0.5:
+            if self.rocket_state.apogee_reached:
                 self.set_relay_state('parachute', open_relay=True)
 
                 # Safing - if we have deployed a parachute turning off igniter will save battery
@@ -239,30 +238,29 @@ class MissionControl:
                 self.set_servo_position('oxidizer_main', open_value=False)
 
                 self.state = MissionState.RECOVERY
-                print(f"\n\nAPOGEE DETECTED (Max altitude {self.max_altitude:.2f})\nParachute deployed!\n>>> Change of state: {self.state}\n\n")
-
+                print(f"\n\nAPOGEE DETECTED (Max altitude {self.rocket_state.max_altitude:.2f})\nParachute deployed!\n>>> Change of state: {self.state}\n\n")
 
 
     def run(self):
         """Main operational loop handling incoming telemetry and state machine logic."""
         print("Mission Control is on. Listening for telemetry..")
 
-        while True:
-            try:
+        try:
+            while True:
                 self.autopilot()
-                frame = self.cm.receive()
 
-            # to avoid waiting too long for any frame if the channel is currently empty
-            except TransportTimeoutError:
-                pass
+                # guaranteed frequency and background thread (Telemetric receiver) can use cpu in this time
+                time.sleep(0.1)
 
-            # if we havent registered callback for received frame yet
-            except UnregisteredCallbackError as e:
-                if e.frame.device_type != ids.DeviceID.SENSOR:
-                    if e.frame.action == ids.ActionID.ACK:
-                        print(f"Received ACK operation = {hex(e.frame.operation)}")
-                    continue
+        # as ctrl + C
+        except KeyboardInterrupt:
+            print("\nManual interrupt detected.")
 
+            #closing all valves
+            self.trigger_abort("MANUAL SHUTDOWN")
+
+            #killing the background thread
+            self.receiver.stop()
 
 if __name__ == "__main__":
     mc = MissionControl()

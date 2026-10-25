@@ -11,6 +11,7 @@ class RocketState:
         logic would be frozen and now we enabled asynchronic frames receiving in the background independently of network
         """
     def __init__(self):
+        # stores current sensor readings for FSM logic
         self.telemetry = {
             'fuel_level' : 0.0,
             'oxidizer_level' : 0.0,
