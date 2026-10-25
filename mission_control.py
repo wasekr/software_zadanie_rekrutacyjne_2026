@@ -163,11 +163,17 @@ class MissionControl:
         print(f"\n\n>>>MISSION ABORTED ! ! !\nREASON: {reason}\n\n")
 
         # direct sending avoiding standard logic (set_relay or servo functions as we dont have to check interlocks cases for these)
+        # had to add dm send afrer every push because of tcp packet fragmentation (receives only first command)
         self.cm.push(self._build_relay_frame('oxidizer_heater', False))
+        self.cm.send()
         self.cm.push(self._build_relay_frame('igniter', False))
+        self.cm.send()
         self.cm.push(self._build_servo_frame('oxidizer_intake', False))
+        self.cm.send()
         self.cm.push(self._build_servo_frame('fuel_intake', False))
+        self.cm.send()
         self.cm.push(self._build_servo_frame('oxidizer_main', False))
+        self.cm.send()
         self.cm.push(self._build_servo_frame('fuel_main', False))
         self.cm.send()
         print("ALL SYSTEMS SECURED\n\n")
@@ -232,8 +238,12 @@ class MissionControl:
         elif self.state == MissionState.READY:
             self.trigger_ignition_sequence()
 
-        elif self.state == MissionState.IN_FLIGHT:
-            if self.rocket_state.apogee_reached:
+        # added logic to deploy parachute also in state after clicking emergency button (closing valves) mid-air
+        elif self.state in (MissionState.IN_FLIGHT, MissionState.ABORT):
+            # Only deploy if we actually took off (altitude > 10m) and are falling
+            alt = self.rocket_state.telemetry.get('altitude', 0.0)
+
+            if alt > 10.0 and self.rocket_state.apogee_reached:
                 self.set_relay_state('parachute', open_relay=True)
 
                 # Safing - if we have deployed a parachute turning off igniter will save battery
